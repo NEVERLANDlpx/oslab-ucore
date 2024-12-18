@@ -103,13 +103,27 @@ alloc_proc(void) {
      *       uint32_t flags;                             // Process flag
      *       char name[PROC_NAME_LEN + 1];               // Process name
      */
+        proc->state = PROC_UNINIT;
+        proc->pid = -1;
+        proc->runs = 0;
+        proc->kstack = 0;
+        proc->need_resched = 0;
+        proc->parent = NULL;
+        proc->mm = NULL;
+        memset(&(proc->context), 0, sizeof(struct context));
+        proc->tf = NULL;
+        proc->cr3 = boot_cr3;
+        proc->flags = 0;
+        memset(proc->name, 0, PROC_NAME_LEN);
 
-     //LAB5 YOUR CODE : (update LAB4 steps)
-     /*
-     * below fields(add in LAB5) in proc_struct need to be initialized  
-     *       uint32_t wait_state;                        // waiting state
-     *       struct proc_struct *cptr, *yptr, *optr;     // relations between processes
-     */
+        //LAB5 YOUR CODE : (update LAB4 steps)
+        /*
+        * below fields(add in LAB5) in proc_struct need to be initialized  
+        *       uint32_t wait_state;                        // waiting state
+        *       struct proc_struct *cptr, *yptr, *optr;     // relations between processes
+        */
+        proc->wait_state = 0;  // 初始化进程等待状态
+        proc->cptr = proc->optr = proc->yptr = NULL;  // 设置进程指针
     }
     return proc;
 }
@@ -206,7 +220,15 @@ proc_run(struct proc_struct *proc) {
         *   lcr3():                   Modify the value of CR3 register
         *   switch_to():              Context switching between two processes
         */
-
+       bool intr_flag;
+       struct proc_struct *prev=current,*next=proc;
+       local_intr_save(intr_flag);//关中断
+       {
+        current=proc;//切换进程
+        lcr3(next->cr3);//修改cr3寄存器
+        switch_to(&(prev->context),&(next->context));//上下文切换
+       }
+       local_intr_restore(intr_flag);
     }
 }
 
@@ -403,7 +425,40 @@ do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     *    update step 1: set child proc's parent to current process, make sure current process's wait_state is 0
     *    update step 5: insert proc_struct into hash_list && proc_list, set the relation links of process
     */
- 
+
+    //    1. call alloc_proc to allocate a proc_struct 调用 alloc_proc 分配一个 proc_struct
+    // 分析练习1中我们实现的进程分配函数，当返回值为NULL时是由于kmalloc(sizeof(struct proc_struct));的返回值为NULL
+    // 而kmalloc函数是用于分配内存的函数，其返回值为NULL表示内存分配失败，此时错误码应该时表示内存问题，与我们前面ret = -E_NO_MEM;  // 错误码：没有可分配内存的设置一致，直接返回错误码
+    if ((proc = alloc_proc()) == NULL) {
+        goto fork_out;
+    }
+    proc->parent = current;  // 子进程的父进程是当前进程
+    assert(current->wait_state == 0);  // 确保进程在等待
+    //    2. call setup_kstack to allocate a kernel stack for child process 调用 setup_kstack 为子进程分配内核栈
+    if (setup_kstack(proc) == -E_NO_MEM) {  // 检查进程内核栈分配是否成功（实际上复制了父进程的内核栈），如果返回-E_NO_MEM表示由于内存不足分配失败，我们需要处理已分配的子进程
+        goto bad_fork_cleanup_proc;
+    }
+    //    3. call copy_mm to dup OR share mm according clone_flag 调用 copy_mm，根据 clone_flag 复制或共享 mm
+    if (copy_mm(clone_flags, proc) != 0) {  // 本次实验中没有具体实现该函数功能，仅仅使用assert做判断模拟该函数错误情况，如果没有错误返回值为0，有错误那么我们需要释放初始化的子进程内核栈
+        goto bad_fork_cleanup_kstack;
+    }
+    //    4. call copy_thread to setup tf & context in proc_struct 调用 copy_thread 在 proc_struct 中设置 tf 和 context
+    copy_thread(proc, stack, tf);  // stack父节点的用户栈指针。果 stack==0，则表示fork一个内核线程。那么和esp没啥区别了吧，另外在risc-v的代码里看到X86遗迹真的好丑陋，应该是sp寄存器
+    //    5. insert proc_struct into hash_list && proc_list 将 proc_struct 插入 hash_list && proc_list
+
+    bool interrupt_flag;  // 判断是否禁用中断
+    local_intr_save(interrupt_flag);  // copy_thread函数中tf的实参 是tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;那么调用该函数将会禁用中断
+    {
+        proc->pid = get_pid();  // 获取当前pid
+        hash_proc(proc);
+        set_links(proc);  // 设置进程链接
+    }
+    local_intr_restore(interrupt_flag);  // 恢复之前的中断状态
+    //    6. call wakeup_proc to make the new child process RUNNABLE 调用 wakeup_proc 使新的子进程可运行
+    wakeup_proc(proc);
+    //    7. set ret vaule using child proc's pid 使用子进程的 pid 设置 ret vaule
+    ret = proc->pid;
+
 fork_out:
     return ret;
 
@@ -436,6 +491,7 @@ do_exit(int error_code) {
         }
         current->mm = NULL;
     }
+
     current->state = PROC_ZOMBIE;
     current->exit_code = error_code;
     bool intr_flag;
@@ -464,6 +520,7 @@ do_exit(int error_code) {
         }
     }
     local_intr_restore(intr_flag);
+
     schedule();
     panic("do_exit will not return!! %d.\n", current->pid);
 }
@@ -603,7 +660,9 @@ load_icode(unsigned char *binary, size_t size) {
      *          tf->status should be appropriate for user program (the value of sstatus)
      *          hint: check meaning of SPP, SPIE in SSTATUS, use them by SSTATUS_SPP, SSTATUS_SPIE(defined in risv.h)
      */
-
+    tf->gpr.sp = USTACKTOP;  // 设置f->gpr.sp为用户栈的顶部地址
+    tf->epc = elf->e_entry;  // 设置tf->epc为用户程序的入口地址
+    tf->status = (read_csr(sstatus) & ~SSTATUS_SPP & ~SSTATUS_SPIE);  // 根据需要设置 tf->status 的值，清除 SSTATUS_SPP 和 SSTATUS_SPIE 位
 
     ret = 0;
 out:

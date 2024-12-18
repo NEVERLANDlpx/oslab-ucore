@@ -458,6 +458,18 @@ do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
             //map of phy addr <--->
             //logical addr
             //(3) make the page swappable.
+            
+            // 将addr线性地址对应的物理页数据从磁盘交换到物理内存中
+            swap_in(mm, addr, &page);
+            if(page == NULL) {
+                cprintf("swap_in in do_pgfault failed\n");
+                goto failed;
+            }
+             // 将交换进来的page页与mm->padir页表中对应addr的二级页表项建立映射关系
+            page_insert(mm->pgdir, page,addr,  perm);
+            // 当前page是为可交换的，将其加入全局虚拟内存交换管理器的管理
+            swap_map_swappable(mm, addr, page, 1);
+
             page->pra_vaddr = addr;
         } else {
             cprintf("no swap_init_ok but ptep is %x, failed\n", *ptep);

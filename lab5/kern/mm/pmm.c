@@ -389,7 +389,10 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
              * (4) build the map of phy addr of  nage with the linear addr start
              */
 
-
+            void * kva_src = page2kva(page);  // 查找 src_kvaddr: 页面的内核虚拟地址——进程 A
+            void * kva_dst = page2kva(npage);  // 查找 dst_kvaddr: npage 的内核虚拟地址——进程 B
+            memcpy(kva_dst, kva_src, PGSIZE);  // 从 src_kvaddr 复制到 dst_kvaddr，大小为 PGSIZE
+            ret = page_insert(to, npage, start, perm);  // 使用线性地址 start 构建 nage 的物理地址映射
             assert(ret == 0);
         }
         start += PGSIZE;

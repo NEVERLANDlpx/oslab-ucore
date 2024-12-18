@@ -1,0 +1,228 @@
+PROJ	:= lab1  # 定义项目名称为 lab1
+EMPTY	:=  # 定义一个空变量，用于构造其他变量
+SPACE	:= $(EMPTY) $(EMPTY)  # 定义一个包含空格的变量，用于在后面方便使用
+SLASH	:= /  # 定义斜杠符号作为目录分隔符
+
+V       := @  # 定义一个静默变量 @，避免 make 执行命令时输出命令行
+
+GCCPREFIX := riscv64-unknown-elf-  # 定义交叉编译工具链前缀，目标架构为 RISC-V
+
+ifndef QEMU  # 检查是否定义了 QEMU，如果没有定义
+QEMU := qemu-system-riscv64  # 使用 qemu-system-riscv64 作为 QEMU 仿真器
+endif  # 结束检查
+
+ifndef SPIKE  # 检查是否定义了 SPIKE，如果没有定义
+SPIKE := spike  # 使用 spike 仿真器
+endif  # 结束检查
+
+# eliminate default suffix rules
+.SUFFIXES: .c .S .h  # 取消默认后缀规则，只保留 .c, .S, .h 文件处理规则
+
+# delete target files if there is an error (or make is interrupted)
+.DELETE_ON_ERROR:  # 如果 make 过程出错或中断，则删除目标文件
+
+# define compiler and flags
+HOSTCC		:= gcc  # 定义本地主机编译器为 gcc
+HOSTCFLAGS	:= -Wall -O2  # 定义本地编译时的编译选项，启用警告并优化
+
+GDB		:= $(GCCPREFIX)gdb  # 定义 RISC-V 平台的 GDB 调试工具
+
+CC		:= $(GCCPREFIX)gcc  # 定义 RISC-V 平台的 GCC 编译器
+CFLAGS  := -mcmodel=medany -std=gnu99 -Wno-unused -Werror  # 编译选项，使用 Medany 内存模型、C99 标准，忽略未使用警告并将警告视为错误
+CFLAGS	+= -fno-builtin -Wall -O2 -nostdinc $(DEFS)  # 禁用内置函数，启用所有警告，O2 优化，不使用标准 include 目录
+CFLAGS	+= -fno-stack-protector -ffunction-sections -fdata-sections  # 禁用堆栈保护，启用函数和数据段的垃圾回收
+CFLAGS	+= -g  # 添加调试信息
+CTYPE	:= c S  # 定义文件类型，表示要编译 .c 和 .S 汇编文件
+
+LD      := $(GCCPREFIX)ld  # 定义 RISC-V 平台的链接器 ld
+LDFLAGS	:= -m elf64lriscv  # 链接器选项，指定输出为 64 位 RISC-V ELF 格式
+LDFLAGS	+= -nostdlib --gc-sections  # 禁用标准库链接，启用垃圾回收节功能，删除未使用的部分
+
+OBJCOPY := $(GCCPREFIX)objcopy  # 定义目标文件的转换工具 objcopy
+OBJDUMP := $(GCCPREFIX)objdump  # 定义目标文件的反汇编工具 objdump
+
+COPY	:= cp  # 定义文件复制命令
+MKDIR   := mkdir -p  # 定义创建目录命令，-p 表示如果目录已存在则不会报错
+MV		:= mv  # 定义文件移动命令
+RM		:= rm -f  # 定义删除命令，-f 表示强制删除
+AWK		:= awk  # 定义文本处理工具 awk
+SED		:= sed  # 定义文本编辑工具 sed
+SH		:= sh  # 定义 shell 命令解释器
+TR		:= tr  # 定义字符转换命令
+TOUCH	:= touch -c  # 定义更新文件时间戳命令，-c 表示不创建新文件
+
+OBJDIR	:= obj  # 定义目标文件输出目录为 obj
+BINDIR	:= bin  # 定义二进制文件输出目录为 bin
+
+ALLOBJS	:=  # 初始化 ALLOBJS 为空，表示所有对象文件
+ALLDEPS	:=  # 初始化 ALLDEPS 为空，表示所有依赖文件
+TARGETS	:=  # 初始化 TARGETS 为空，表示所有构建目标
+
+# include some predefined function
+include tools/function.mk  # 包含预定义的函数文件，可能包含构建所需的宏定义
+
+listf_cc = $(call listf,$(1),$(CTYPE))  # 定义列出 .c 和 .S 文件的宏
+
+# for cc
+add_files_cc = $(call add_files,$(1),$(CC),$(CFLAGS) $(3),$(2),$(4))  # 定义添加 C 文件到构建过程的宏
+create_target_cc = $(call create_target,$(1),$(2),$(3),$(CC),$(CFLAGS))  # 定义创建 C 文件目标的宏
+
+# for hostcc
+add_files_host = $(call add_files,$(1),$(HOSTCC),$(HOSTCFLAGS),$(2),$(3))  # 定义添加本地 C 文件到构建过程的宏
+create_target_host = $(call create_target,$(1),$(2),$(3),$(HOSTCC),$(HOSTCFLAGS))  # 定义创建本地 C 文件目标的宏
+
+cgtype = $(patsubst %.$(2),%.$(3),$(1))  # 定义更改文件扩展名的宏
+objfile = $(call toobj,$(1))  # 定义获取对象文件路径的宏
+asmfile = $(call cgtype,$(call toobj,$(1)),o,asm)  # 定义获取汇编文件路径的宏
+outfile = $(call cgtype,$(call toobj,$(1)),o,out)  # 定义获取输出文件路径的宏
+symfile = $(call cgtype,$(call toobj,$(1)),o,sym)  # 定义获取符号表文件路径的宏
+
+# for match pattern
+match = $(shell echo $(2) | $(AWK) '{for(i=1;i<=NF;i++){if(match("$(1)","^"$$(i)"$$")){exit 1;}}}'; echo $$?)  # 定义匹配模式的宏
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# include kernel/user
+
+INCLUDE	+= libs/  # 将 libs 目录添加到包含路径
+
+CFLAGS	+= $(addprefix -I,$(INCLUDE))  # 将包含路径添加到编译选项
+
+LIBDIR	+= libs  # 添加库目录
+
+$(call add_files_cc,$(call listf_cc,$(LIBDIR)),libs,)  # 将库文件添加到目标文件中
+
+# -------------------------------------------------------------------
+# kernel
+
+KINCLUDE	+= kern/debug/ \  # 添加内核调试目录到包含路径
+			   kern/driver/ \  # 添加内核驱动目录到包含路径
+			   kern/trap/ \  # 添加内核中断处理目录到包含路径
+			   kern/mm/ \  # 添加内核内存管理目录到包含路径
+			   kern/arch/  # 添加内核架构相关目录到包含路径
+
+KSRCDIR		+= kern/init \  # 添加内核初始化目录到源码路径
+			   kern/libs \  # 添加内核库目录到源码路径
+			   kern/debug \  # 添加内核调试目录到源码路径
+			   kern/driver \  # 添加内核驱动目录到源码路径
+			   kern/trap \  # 添加内核中断处理目录到源码路径
+			   kern/mm  # 添加内核内存管理目录到源码路径
+
+KCFLAGS		+= $(addprefix -I,$(KINCLUDE))  # 将内核包含路径添加到编译选项
+
+$(call add_files_cc,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))  # 将内核源码文件添加到目标文件中
+
+KOBJS	= $(call read_packet,kernel libs)  # 定义内核目标文件的对象文件列表
+
+# create kernel target
+kernel = $(call totarget,kernel)  # 定义内核目标
+
+$(kernel): tools/kernel.ld  # 内核依赖链接脚本 kernel.ld
+
+$(kernel): $(KOBJS)  # 内核依赖对象文件列表
+	@echo + ld $@  # 静默执行 ld 命令，显示链接
+	$(V)$(LD) $(LDFLAGS) -T tools/kernel.ld -o $@ $(KOBJS)  # 链接内核并生成二进制文件
+	@$(OBJDUMP) -S $@ > $(call asmfile,kernel)  # 生成汇编文件
+	@$(OBJDUMP) -t $@ | $(SED) '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $(call symfile,kernel)  # 生成符号表文件
+
+$(call create_target,kernel)  # 创建内核目标
+
+# -------------------------------------------------------------------
+# create ucore.img
+UCOREIMG	:= $(call totarget,ucore.img)  # 定义内核镜像文件 ucore.img
+
+# $(UCOREIMG): $(kernel)
+#	cd ../../riscv-pk && rm -rf build && mkdir build && cd build && ../configure --prefix=$(RISCV) --host=riscv64-unknown-elf --with-payload=../../labcodes/$(PROJ)/$(kernel)  --disable-fp-emulation && make && cp bbl ../../labcodes/$(PROJ)/$(UCOREIMG)
+
+$(UCOREIMG): $(kernel)  # 内核镜像依赖于内核
+	$(OBJCOPY) $(kernel) --strip-all -O binary $@  # 使用 objcopy 生成二进制内核镜像
+
+$(call create_target,ucore.img)  # 创建内核镜像目标
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+$(call finish_all)  # 调用 finish_all 函数完成构建
+
+IGNORE_ALLDEPS	= clean \  # 定义忽略依赖的目标
+				  dist-clean \
+				  grade \
+				  touch \
+				  print-.+ \
+				  handin
+
+ifeq ($(call match,$(MAKECMDGOALS),$(IGNORE_ALLDEPS)),0)  # 如果目标是忽略依赖的目标
+-include $(ALLDEPS)  # 包含所有依赖文件
+endif
+
+# files for grade script
+
+TARGETS: $(TARGETS)  # 定义目标文件依赖于自身
+
+.DEFAULT_GOAL := TARGETS  # 设置默认目标
+
+.PHONY: qemu spike  # 声明伪目标
+qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)  # 定义 qemu 目标
+#	$(V)$(QEMU) -kernel $(UCOREIMG) -nographic
+	$(V)$(QEMU) \  # 使用 QEMU 启动内核
+		-machine virt \
+		-nographic \
+		-bios default \
+		-device loader,file=$(UCOREIMG),addr=0x80200000
+
+debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)  # 定义 debug 目标
+	$(V)$(QEMU) \  # 使用 QEMU 启动内核并等待 GDB 连接
+		-machine virt \
+		-nographic \
+		-bios default \
+		-device loader,file=$(UCOREIMG),addr=0x80200000\
+		-s -S
+
+gdb:  # 定义 gdb 调试目标
+	riscv64-unknown-elf-gdb \  # 使用 riscv64 gdb 连接 QEMU
+    -ex 'file bin/kernel' \
+    -ex 'set arch riscv:rv64' \
+    -ex 'target remote localhost:1234'
+
+
+spike: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)  # 定义 spike 目标
+	$(V)$(SPIKE) $(UCOREIMG)  # 使用 spike 启动内核
+
+.PHONY: grade touch  # 声明伪目标
+
+GRADE_GDB_IN	:= .gdb.in  # 定义 GDB 输入文件
+GRADE_QEMU_OUT	:= .qemu.out  # 定义 QEMU 输出文件
+HANDIN			:= proj$(PROJ)-handin.tar.gz  # 定义交作业文件名
+
+TOUCH_FILES		:= kern/trap/trap.c  # 定义需要 touch 的文件
+
+MAKEOPTS		:= --quiet --no-print-directory  # 定义 make 选项
+
+grade:  # 定义 grade 目标
+	$(V)$(MAKE) $(MAKEOPTS) clean  # 执行清理
+	$(V)$(SH) tools/grade-rv64-patch.sh  # 调用打分脚本
+
+touch:  # 定义 touch 目标
+	$(V)$(foreach f,$(TOUCH_FILES),$(TOUCH) $(f))  # 对目标文件执行 touch
+
+print-%:  # 定义打印变量值的目标
+	@echo $($(shell echo $(patsubst print-%,%,$@) | $(TR) [a-z] [A-Z]))  # 打印变量值
+
+.PHONY: clean dist-clean handin packall tags  # 声明伪目标
+clean:  # 定义清理目标
+	$(V)$(RM) $(GRADE_GDB_IN) $(GRADE_QEMU_OUT) cscope* tags  # 删除文件
+	-$(RM) -r $(OBJDIR) $(BINDIR)  # 删除目录
+
+dist-clean: clean  # 定义彻底清理目标
+	-$(RM) $(HANDIN)  # 删除交作业文件
+
+handin: packall  # 定义 handin 目标
+	@echo Please visit http://learn.tsinghua.edu.cn and upload $(HANDIN). Thanks!  # 提示上传文件
+
+packall: clean  # 定义打包目标
+	@$(RM) -f $(HANDIN)  # 删除旧打包文件
+	@tar -czf $(HANDIN) `find . -type f -o -type d | grep -v '^\.*$$' | grep -vF '$(HANDIN)'`  # 创建新打包文件
+
+tags:  # 定义 tags 目标
+	@echo TAGS ALL  # 输出 TAGS ALL
+	$(V)rm -f cscope.files cscope.in.out cscope.out cscope.po.out tags  # 删除旧的 tag 文件
+	$(V)find . -type f -name "*.[chS]" >cscope.files  # 查找源文件生成 cscope.files
+	$(V)cs

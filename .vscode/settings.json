@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "*.tcc": "cpp",
+        "condition_variable": "cpp",
+        "future": "cpp",
+        "string_view": "cpp",
+        "type_traits": "cpp",
+        "algorithm": "cpp"
+    }
+}

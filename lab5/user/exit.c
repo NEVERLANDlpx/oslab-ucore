@@ -9,10 +9,10 @@ main(void) {
     cprintf("I am the parent. Forking the child...\n");
     if ((pid = fork()) == 0) {
         cprintf("I am the child.\n");
-        uintptr_t* p = 0x800592;
-        cprintf("*p = 0x%x\n", *p);
-        *p = 0x111;
-        cprintf("*p = 0x%x\n", *p);
+        //uintptr_t* p = 0x800592;
+        //cprintf("*p = 0x%x\n", *p);
+        //*p = 0x111;
+        //cprintf("*p = 0x%x\n", *p);
         yield();
         yield();
         yield();

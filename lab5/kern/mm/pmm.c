@@ -399,6 +399,33 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
     } while (start != 0 && start < end);
     return 0;
 }
+//for cow
+int cow_copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end) {
+    assert(start % PGSIZE == 0 && end % PGSIZE == 0);
+    assert(USER_ACCESS(start, end));
+    do {
+        pte_t *ptep = get_pte(from, start, 0);
+        if (ptep == NULL) {
+            start = ROUNDDOWN(start + PTSIZE, PTSIZE);
+            continue;
+        }
+        if (*ptep & PTE_V) {
+            // 读取页表项，并清除写入权限
+            *ptep &= ~PTE_W;//改动1：清除旧页面写权限
+            uint32_t perm = (*ptep & PTE_USER & ~PTE_W);//改动2：清除新页面写权限
+            struct Page *page = pte2page(*ptep);
+            assert(page != NULL);
+            int ret = 0;
+            // 将页插入到新的页表中
+            ret = page_insert(to, page, start, perm);//改动三：页表项中插入的是旧页，而不是新分配一页
+            cprintf("page shared,old page is inserted in new pgdir\n");
+            assert(ret == 0);
+        }
+        start += PGSIZE;
+    } while (start != 0 && start < end);
+    return 0;
+}
+
 
 // page_remove - free an Page which is related linear address la and has an
 // validated pte

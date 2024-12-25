@@ -64,6 +64,7 @@ sys_pgdir(uint64_t arg[]) {
     return 0;
 }
 
+// syscalls 数组：存储每个系统调用对应的处理函数。索引为系统调用号。
 static int (*syscalls[])(uint64_t arg[]) = {
     [SYS_exit]              sys_exit,
     [SYS_fork]              sys_fork,
@@ -82,7 +83,7 @@ void
 syscall(void) {
     struct trapframe *tf = current->tf;
     uint64_t arg[5];
-    int num = tf->gpr.a0;
+    int num = tf->gpr.a0;//a0寄存器保存了系统调用编号
     if (num >= 0 && num < NUM_SYSCALLS) {
         if (syscalls[num] != NULL) {
             arg[0] = tf->gpr.a1;
@@ -90,7 +91,7 @@ syscall(void) {
             arg[2] = tf->gpr.a3;
             arg[3] = tf->gpr.a4;
             arg[4] = tf->gpr.a5;
-            tf->gpr.a0 = syscalls[num](arg);
+            tf->gpr.a0 = syscalls[num](arg);//把寄存器里的参数取出来，转发给系统调用编号对应的函数进行处理
             return ;
         }
     }

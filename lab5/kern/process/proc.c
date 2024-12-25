@@ -383,6 +383,24 @@ copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf) {
  * @stack:       the parent's user stack pointer. if stack==0, It means to fork a kernel thread.
  * @tf:          the trapframe info, which will be copied to child process's proc->tf
  */
+//通过调用 do_fork，用户态进程可以创建一个新的子进程，使得父子进程共享同样的代码逻辑和资源。
+/*
+检查是否超过最大进程数
+↓
+分配新进程控制块（alloc_proc）
+↓
+分配内核栈（setup_kstack）
+↓
+复制/共享内存（copy_mm）
+↓
+设置陷阱帧和上下文（copy_thread）
+↓
+分配 PID，更新进程关系和进程表（get_pid, set_links, hash_proc）
+↓
+唤醒子进程
+↓
+返回子进程 PID
+*/
 int
 do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     int ret = -E_NO_FREE_PROC;
@@ -426,38 +444,45 @@ do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     *    update step 5: insert proc_struct into hash_list && proc_list, set the relation links of process
     */
 
-    //    1. call alloc_proc to allocate a proc_struct 调用 alloc_proc 分配一个 proc_struct
-    // 分析练习1中我们实现的进程分配函数，当返回值为NULL时是由于kmalloc(sizeof(struct proc_struct));的返回值为NULL
-    // 而kmalloc函数是用于分配内存的函数，其返回值为NULL表示内存分配失败，此时错误码应该时表示内存问题，与我们前面ret = -E_NO_MEM;  // 错误码：没有可分配内存的设置一致，直接返回错误码
-    if ((proc = alloc_proc()) == NULL) {
-        goto fork_out;
+    //    1. call alloc_proc to allocate a proc_struct
+    if ((proc = alloc_proc()) == NULL) 
+    {
+        goto fork_out; //分配 proc_struct：alloc_proc() 用于分配一个新的 proc_struct，表示一个新进程。如果分配失败，跳转到 fork_out，返回错误。
     }
-    proc->parent = current;  // 子进程的父进程是当前进程
-    assert(current->wait_state == 0);  // 确保进程在等待
-    //    2. call setup_kstack to allocate a kernel stack for child process 调用 setup_kstack 为子进程分配内核栈
-    if (setup_kstack(proc) == -E_NO_MEM) {  // 检查进程内核栈分配是否成功（实际上复制了父进程的内核栈），如果返回-E_NO_MEM表示由于内存不足分配失败，我们需要处理已分配的子进程
+    proc->parent = current;  // 设置新进程的父进程为当前进程，即子进程会记录它的父进程。
+    assert(current->wait_state == 0);//确保当前进程正在等待
+    
+    //    2. call setup_kstack to allocate a kernel stack for child process
+    if (setup_kstack(proc) != 0) //分配内核栈：setup_kstack 为子进程分配内核栈。如果分配失败，则跳转到 bad_fork_cleanup_proc 进行清理。
+    {  
         goto bad_fork_cleanup_proc;
     }
-    //    3. call copy_mm to dup OR share mm according clone_flag 调用 copy_mm，根据 clone_flag 复制或共享 mm
-    if (copy_mm(clone_flags, proc) != 0) {  // 本次实验中没有具体实现该函数功能，仅仅使用assert做判断模拟该函数错误情况，如果没有错误返回值为0，有错误那么我们需要释放初始化的子进程内核栈
+    //    3. call copy_mm to dup OR share mm according clone_flag
+    if(copy_mm(clone_flags, proc) != 0) //复制或共享内存管理：copy_mm 函数根据 clone_flags 来决定是复制父进程的内存管理结构还是共享。若操作失败，跳转到 bad_fork_cleanup_kstack。
+    {  
         goto bad_fork_cleanup_kstack;
     }
-    //    4. call copy_thread to setup tf & context in proc_struct 调用 copy_thread 在 proc_struct 中设置 tf 和 context
-    copy_thread(proc, stack, tf);  // stack父节点的用户栈指针。果 stack==0，则表示fork一个内核线程。那么和esp没啥区别了吧，另外在risc-v的代码里看到X86遗迹真的好丑陋，应该是sp寄存器
-    //    5. insert proc_struct into hash_list && proc_list 将 proc_struct 插入 hash_list && proc_list
-
+    //    4. call copy_thread to setup tf & context in proc_struct
+    copy_thread(proc, stack, tf); //copy_thread 设置新进程的 trapframe 和上下文，确保子进程在启动时能正确地执行。
+    //    5. insert proc_struct into hash_list && proc_list ：将进程插入哈希表和进程列表
     bool interrupt_flag;  // 判断是否禁用中断
-    local_intr_save(interrupt_flag);  // copy_thread函数中tf的实参 是tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;那么调用该函数将会禁用中断
-    {
-        proc->pid = get_pid();  // 获取当前pid
-        hash_proc(proc);
-        set_links(proc);  // 设置进程链接
+    /*
+    local_intr_save 和 local_intr_restore 正是用于控制中断状态的操作宏，它们确保了在关键代码区间内不会被中断打断，从而避免竞争条件。
+    local_intr_save 的作用是保存当前的中断状态并禁用本地中断。
+    在禁用中断时，当前CPU上的中断不会触发，这样可以保证接下来的操作不会被其他中断打断。
+    它将当前中断状态保存在 interrupt_flag 变量中，以便后续恢复。
+    */
+    local_intr_save(interrupt_flag);  //使用 local_intr_save 和 local_intr_restore 保护这一过程，防止中断打断对共享资源的修改。
+    {  
+        proc->pid = get_pid();    // 为新进程分配 PID
+        hash_proc(proc);  // 将进程添加到哈希表
+        set_links(proc);  //设置进程链接
     }
-    local_intr_restore(interrupt_flag);  // 恢复之前的中断状态
-    //    6. call wakeup_proc to make the new child process RUNNABLE 调用 wakeup_proc 使新的子进程可运行
-    wakeup_proc(proc);
-    //    7. set ret vaule using child proc's pid 使用子进程的 pid 设置 ret vaule
-    ret = proc->pid;
+    local_intr_restore(interrupt_flag);   
+    //    6. call wakeup_proc to make the new child process RUNNABLE
+    wakeup_proc(proc); //调用 wakeup_proc 将子进程的状态设置为可运行 (PROC_RUNNABLE)，意味着它准备好被调度。
+    //    7. set ret vaule using child proc's pid
+    ret = proc->pid;//返回子进程的 PID，作为 do_fork 的返回值。
 
 fork_out:
     return ret;
@@ -472,7 +497,11 @@ bad_fork_cleanup_proc:
 // do_exit - called by sys_exit
 //   1. call exit_mmap & put_pgdir & mm_destroy to free the almost all memory space of process
 //   2. set process' state as PROC_ZOMBIE, then call wakeup_proc(parent) to ask parent reclaim itself.
-//   3. call scheduler to switch to other process
+//   3. call scheduler to switch to other process                                                                                                                                                                           
+// 释放当前进程所占用的资源，包括内存空间和页表。
+// 将当前进程的状态设置为 PROC_ZOMBIE（僵尸进程），并通知其父进程进行回收。
+// 如果当前进程有子进程，将子进程交给 initproc（通常是 PID 为 1 的特殊进程）管理。
+// 调用调度器（schedule），切换到下一个可运行的进程。
 int
 do_exit(int error_code) {
     if (current == idleproc) {
@@ -529,6 +558,16 @@ do_exit(int error_code) {
  * @binary:  the memory addr of the content of binary program
  * @size:  the size of the content of binary program
  */
+// 加载并解析一个处于内存中的ELF执行文件格式的应用程序
+
+/*
+load_icode 的主要功能是：
+创建进程的内存管理结构和页表。
+加载 ELF 格式程序的代码段和数据段到用户态内存。
+初始化 BSS 段和用户栈。
+设置用户态程序入口地址和上下文（trapframe）。
+准备切换到用户态执行。
+*/
 static int
 load_icode(unsigned char *binary, size_t size) {
     if (current->mm != NULL) {
@@ -679,6 +718,11 @@ bad_mm:
 
 // do_execve - call exit_mmap(mm)&put_pgdir(mm) to reclaim memory space of current process
 //           - call load_icode to setup new memory space accroding binary prog.
+
+//do_execve 是操作系统中用于执行 execve 系统调用的实现函数。其核心作用是用一个新的程序（二进制文件）替换当前进程的内存空间，
+//同时保留当前进程的其他信息（例如 PID、父子关系等）
+
+//do_execve 的主要流程包括清理当前进程的现有内存空间，加载新的程序到内存，以及初始化与新程序相关的状态。
 int
 do_execve(const char *name, size_t len, unsigned char *binary, size_t size) {
     struct mm_struct *mm = current->mm;
@@ -808,17 +852,17 @@ kernel_execve(const char *name, unsigned char *binary, size_t size) {
     int64_t ret=0, len = strlen(name);
  //   ret = do_execve(name, len, binary, size);
     asm volatile(
-        "li a0, %1\n"
-        "lw a1, %2\n"
-        "lw a2, %3\n"
-        "lw a3, %4\n"
-        "lw a4, %5\n"
-    	"li a7, 10\n"
-        "ebreak\n"
-        "sw a0, %0\n"
-        : "=m"(ret)
-        : "i"(SYS_exec), "m"(name), "m"(len), "m"(binary), "m"(size)
-        : "memory");
+        "li a0, %1\n"         // 将系统调用号 SYS_exec (值为10) 加载到 a0 寄存器
+        "lw a1, %2\n"         // 将用户程序名称的地址加载到 a1 寄存器
+        "lw a2, %3\n"         // 将名称长度 len 加载到 a2 寄存器
+        "lw a3, %4\n"         // 将用户程序二进制起始地址加载到 a3 寄存器
+        "lw a4, %5\n"         // 将用户程序大小 size 加载到 a4 寄存器
+        "li a7, 10\n"         // 将系统调用号（10，代表 SYS_exec）加载到 a7 寄存器
+        "ebreak\n"            // 触发断点异常，切换到内核模式
+        "sw a0, %0\n"         // 在系统调用返回后，将返回值写入 ret 变量
+        : "=m"(ret)           // 输出操作数，返回值存储到 ret 中
+        : "i"(SYS_exec), "m"(name), "m"(len), "m"(binary), "m"(size)  // 输入操作数
+        : "memory"            // 告诉编译器此操作会修改内存
     cprintf("ret = %d\n", ret);
     return ret;
 }

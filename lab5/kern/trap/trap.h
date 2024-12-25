@@ -38,6 +38,14 @@ struct pushregs {
     uintptr_t t6;    // Temporary
 };
 
+
+/*
+通用寄存器的值（gpr）。
+CPU 状态寄存器的值（status）。
+异常发生时的程序计数器（epc）。
+异常相关的上下文信息（tval）。
+异常或中断的原因（cause）。
+*/
 struct trapframe {
     struct pushregs gpr;
     uintptr_t status;

@@ -205,6 +205,9 @@ dup_mmap(struct mm_struct *to, struct mm_struct *from) {
         if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0) {
             return -E_NO_MEM;
         }
+        // if (cow_copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end) != 0) {
+        //     return -E_NO_MEM;
+        // }
     }
     return 0;
 }
@@ -421,6 +424,32 @@ do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
     ret = -E_NO_MEM;
 
     pte_t *ptep=NULL;
+    // if ((ptep = get_pte(mm->pgdir, addr, 0)) != NULL) {
+    //     if((*ptep & PTE_V) & ~(*ptep & PTE_W)) {
+    //         cprintf("COW page fault at 0x%x\n", addr);
+    //         int ret = 0;
+    //         pte_t *ptep = NULL;
+    //         // 获取引发错误的地址对应的页表项
+    //         ptep = get_pte(mm->pgdir, addr, 0);
+    //         uint32_t perm = (*ptep & PTE_USER) | PTE_W;
+    //         //下面的内容类似copy_range
+    //         struct Page *page = pte2page(*ptep);
+    //         struct Page *npage = alloc_page();
+    //         assert(page != NULL);
+    //         assert(npage != NULL);
+    //         uintptr_t* src = page2kva(page);
+    //         uintptr_t* dst = page2kva(npage);
+    //         // 复制原始页的内容到新页
+    //         memcpy(dst, src, PGSIZE);
+    //         uintptr_t start = ROUNDDOWN(addr, PGSIZE);
+    //         *ptep = 0;
+    //         // 插入新页
+    //         ret = page_insert(mm->pgdir, npage, start, perm);
+    //         ptep = get_pte(mm->pgdir, addr, 0);
+    //         cprintf("page dupted,a new page able to write is created and inserted in the new pgdir\n");
+    //         return ret;
+    //     }
+    // }
   
     // try to find a pte, if pte's PT(Page Table) isn't existed, then create a PT.
     // (notice the 3th parameter '1')
